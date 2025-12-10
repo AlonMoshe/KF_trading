@@ -24,7 +24,7 @@ class VIXFastDownloader(EWrapper, EClient):
             reqId=1,
             contract=contract,
             endDateTime="",
-            durationStr="1 D",         # ← FULL YEAR AT ONCE
+            durationStr="3 D",         # ← FULL YEAR AT ONCE
             barSizeSetting="1 min",    # ← 1-MINUTE BARS
             whatToShow="TRADES",
             useRTH=0,
@@ -46,8 +46,8 @@ class VIXFastDownloader(EWrapper, EClient):
     def historicalDataEnd(self, reqId, start, end):
         print("Completed download.")
         df = pd.DataFrame(self.data)
-        df.to_csv(f"C:/Users/User/OneDrive/Projects/TradingSystem/Data/VIX_Data/VIX_1min_2025_12_01.csv", index=False)
-        print("Saved: VIX_1min_2025_11_28.csv")
+        df.to_csv(f"C:/Users/User/OneDrive/Projects/TradingSystem/Data/VIX_Data/VIX_2025_12_03_2025-12-05_1min.csv", index=False)
+        print("Saved: VIX_1min_2025_12_02.csv")
         self.disconnect()
 
 

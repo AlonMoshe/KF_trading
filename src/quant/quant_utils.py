@@ -128,6 +128,66 @@ def compute_rolling_ecdf(series, min_points=50):
     return q_roll
 
 
+def compute_daily_rolling_ecdf(series, min_points=50, window_max=100):
+    """
+    Daily, causal ECDF quantiles with:
+      - warm-up: no quantiles until at least `min_points` samples
+      - window grows until `window_max`
+      - then fixed-size rolling window of size `window_max`
+
+    Parameters
+    ----------
+    series : array-like or pd.Series
+        Input data (e.g. daily KF slope).
+    min_points : int, default 50
+        Minimum number of observations required before emitting quantiles.
+        Until this is reached, output is NaN.
+    window_max : int, default 100
+        Maximum window size. After this is reached, the window becomes
+        rolling: last `window_max` observations only.
+
+    Returns
+    -------
+    q_roll : np.ndarray
+        Quantiles in [0,1], same length as series.
+    """
+    s = np.asarray(series, dtype=float)
+    n = len(s)
+    q_roll = np.full(n, np.nan, dtype=float)
+
+    window_vals = []
+
+    for t in range(n):
+        x = s[t]
+
+        if np.isnan(x):
+            # skip NaNs: quantile stays NaN, do not insert into window
+            continue
+
+        # Append new value
+        window_vals.append(x)
+
+        # Enforce max window size
+        if len(window_vals) > window_max:
+            # drop oldest
+            window_vals.pop(0)
+
+        window_size = len(window_vals)
+
+        # Warm-up: we require at least `min_points` samples in the window
+        if window_size < min_points:
+            continue
+
+        # Compute ECDF(x) = proportion of window_vals <= x
+        w = np.asarray(window_vals, dtype=float)
+        w_sorted = np.sort(w)
+        # number of values <= x
+        rank = np.searchsorted(w_sorted, x, side="right")
+        q_roll[t] = rank / window_size
+
+    return q_roll
+
+
 # -------------------------------------------------------
 # 3. Quantile bin utilities
 # -------------------------------------------------------
@@ -188,6 +248,53 @@ def add_slope_quantiles(df, slope_col="KF_slope_adapt", min_points=50):
 
     out["slope_q_full"] = compute_full_ecdf_quantiles(slope)
     out["slope_q_roll"] = compute_rolling_ecdf(slope, min_points=min_points)
+
+    return out
+
+def add_slope_quantiles_daily(
+    df,
+    slope_col="KF_slope_adapt",
+    min_points=50,
+    window_max=100,
+):
+    """
+    Add daily, causal quantiles for slope using compute_daily_rolling_ecdf.
+
+    This is intended to be used on a *single trading session* (one day),
+    e.g. after select_intraday_session().
+
+    Adds column:
+        - slope_q_roll_daily   (trading-valid intraday quantile)
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Single-day dataframe (already sliced to the intraday session).
+    slope_col : str
+        Column containing the slope (KF_slope_adapt).
+    min_points : int
+        Warm-up size: no quantiles before this many samples in the window.
+    window_max : int
+        Maximum window size; after this is reached window becomes rolling.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy with slope_q_roll_daily added.
+    """
+    if slope_col not in df.columns:
+        raise ValueError(f"Column '{slope_col}' not found in dataframe.")
+
+    out = df.copy()
+    slope = out[slope_col].to_numpy(dtype=float)
+
+    q_roll_daily = compute_daily_rolling_ecdf(
+        slope,
+        min_points=min_points,
+        window_max=window_max,
+    )
+
+    out["slope_q_roll_daily"] = q_roll_daily
 
     return out
 

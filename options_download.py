@@ -19,20 +19,20 @@ class OptionDownloader(EWrapper, EClient):
 
         # --- Define the Option Contract ---
         contract = Contract()
-        contract.symbol = "QQQ"
+        contract.symbol = "AAPL"
         contract.secType = "OPT"
         contract.exchange = "SMART"
         contract.currency = "USD"
-        contract.lastTradeDateOrContractMonth = "20251205"
+        contract.lastTradeDateOrContractMonth = "20251219"
         contract.right = "P"
-        contract.strike = 610
+        contract.strike = 280
 
         # --- Request 1 day of 5-second bars ---
         self.reqHistoricalData(
             reqId=self.req_id,
             contract=contract,
-            endDateTime = "20251201 23:59:59 US/Eastern",
-            durationStr="1 D",
+            endDateTime = "20251202 23:59:59 US/Eastern",
+            durationStr="3 D",
             barSizeSetting="5 secs",
             whatToShow="TRADES",                 # or "TRADES", "MIDPOINT"
             useRTH=0,
@@ -60,7 +60,7 @@ class OptionDownloader(EWrapper, EClient):
 
         df.to_csv(
             "C:/Users/User/OneDrive/Projects/TradingSystem/Data/Options/"
-            "QQQ_610P5DEC2025_2025-12-01_5sec_2.csv",
+            "AAPL_280P19DEC2025_2025-12-02_5sec_3DAYS.csv",
             index=False
         )
 

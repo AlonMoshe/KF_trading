@@ -2,10 +2,15 @@ import plotly.graph_objects as go
 
 
 
+
 def plot_price_signals(
     df,
     price_cols=("KF_level_adapt",),
     secondary_cols=("KF_slope_adapt",),
+    trades=None,                         # <-- ADD THIS
+    show_trade_lines=True,  
+    show_signals=True,              # <–– raw entry/exit signals
+    show_real_trades=True,          # <–– df_trades execution markers
     entry_long_col="entry_long",
     exit_long_col="exit_long",
     entry_short_col="entry_short",
@@ -20,6 +25,9 @@ def plot_price_signals(
     width=1200,
     template="plotly_white"
 ):
+
+
+
     """
     Plot price, secondary indicators, entries, exits, and peaks using Plotly.
     """
@@ -110,31 +118,31 @@ def plot_price_signals(
     # Add numeric labels next to entries/exits
     # --------------------------------------------------
 
-    # Long trades
-    if "trade_id_long" in df.columns:
-        idx = df.index[df["trade_id_long"].notna()]
-        for t in idx:
-            fig.add_annotation(
-                x=t,
-                y=df.loc[t, base_col],
-                text=str(int(df.loc[t, "trade_id_long"])),
-                showarrow=False,
-                yshift=15,
-                font=dict(size=10, color="green")
-            )
+    # # Long trades
+    # if "trade_id_long" in df.columns:
+    #     idx = df.index[df["trade_id_long"].notna()]
+    #     for t in idx:
+    #         fig.add_annotation(
+    #             x=t,
+    #             y=df.loc[t, base_col],
+    #             text=str(int(df.loc[t, "trade_id_long"])),
+    #             showarrow=False,
+    #             yshift=15,
+    #             font=dict(size=10, color="green")
+    #         )
 
-    # Short trades
-    if "trade_id_short" in df.columns:
-        idx = df.index[df["trade_id_short"].notna()]
-        for t in idx:
-            fig.add_annotation(
-                x=t,
-                y=df.loc[t, base_col],
-                text=str(int(df.loc[t, "trade_id_short"])),
-                showarrow=False,
-                yshift=-15,
-                font=dict(size=10, color="red")
-            )
+    # # Short trades
+    # if "trade_id_short" in df.columns:
+    #     idx = df.index[df["trade_id_short"].notna()]
+    #     for t in idx:
+    #         fig.add_annotation(
+    #             x=t,
+    #             y=df.loc[t, base_col],
+    #             text=str(int(df.loc[t, "trade_id_short"])),
+    #             showarrow=False,
+    #             yshift=-15,
+    #             font=dict(size=10, color="red")
+    #         )
 
 
     # --------------------------------------------------
@@ -163,6 +171,57 @@ def plot_price_signals(
                 name="Slope Peak"
             ))
 
+    
+    
+    # --------------------------------------------------
+    # Plot REAL executed trades
+    # --------------------------------------------------
+    if show_real_trades and (trades is not None) and len(trades) > 0:
+
+        for _, tr in trades.iterrows():
+            entry_t = tr["entry_time"]
+            exit_t  = tr["exit_time"]
+            entry_p = tr["entry_price"]
+            exit_p  = tr["exit_price"]
+
+            side = tr["side"]
+
+            color = "blue" if side == "long" else "red"
+
+            # Entry marker (REAL TRADE)
+            fig.add_trace(go.Scatter(
+                x=[entry_t],
+                y=[entry_p],
+                mode='markers',
+                marker=dict(symbol="circle", size=12, color=color),
+                name=f"{side.capitalize()} Entry (EXECUTED)",
+                showlegend=False
+            ))
+
+            # Exit marker (REAL TRADE)
+            fig.add_trace(go.Scatter(
+                x=[exit_t],
+                y=[exit_p],
+                mode='markers',
+                marker=dict(symbol="x", size=14, color=color, line=dict(width=3)),
+                name=f"{side.capitalize()} Exit (EXECUTED)",
+                showlegend=False
+            ))
+
+            # Optional dashed line between entry and exit
+            if show_trade_lines:
+                fig.add_trace(go.Scatter(
+                    x=[entry_t, exit_t],
+                    y=[entry_p, exit_p],
+                    mode="lines",
+                    line=dict(color=color, width=2, dash="dash"),
+                    opacity=0.7,
+                    name=f"{side.capitalize()} Trade Line",
+                    showlegend=False
+                ))
+
+        
+    
     # --------------------------------------------------
     # Layout
     # --------------------------------------------------
