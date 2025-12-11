@@ -40,7 +40,10 @@ def add_slope_peaks(
     region_max_col="region_max",
     region_min_col="region_min",
     smooth=False,
-    smooth_window=5
+    smooth_window=5,
+    peak_half_window=1,
+     peak_hysteresis=0.0,
+     peak_min_swing=0.0
 ):
     """
     STRICTLY CAUSAL slope peaks/troughs for timing entries.
@@ -69,22 +72,99 @@ def add_slope_peaks(
     peak_max = np.zeros(n, dtype=bool)
     peak_min = np.zeros(n, dtype=bool)
 
-    # Detect raw extremum at t, emit signal at t+1
     s_vals = s_use.to_numpy(dtype=float)
 
-    for t in range(1, n - 1):
-        # raw local max at t
-        if (s_vals[t] > s_vals[t - 1]) and (s_vals[t] >= s_vals[t + 1]) and region_max[t]:
-            peak_max[t + 1] = True
+    # -------------------------------------------------
+    # Windowed peak detection (strictly causal)
+    # -------------------------------------------------
+    k = int(peak_half_window)
+    if k < 1:
+        k = 1
 
-        # raw local min at t
-        if (s_vals[t] < s_vals[t - 1]) and (s_vals[t] <= s_vals[t + 1]) and region_min[t]:
-            peak_min[t + 1] = True
+    if k == 1:
+        # Original 3-point logic, with optional hysteresis
+        for t in range(1, n - 1):
+            right = t + 1
+
+            # raw local max at t
+            if (s_vals[t] > s_vals[t - 1]) and (s_vals[t] >= s_vals[right]) and region_max[t]:
+
+                # Hysteresis condition:
+                if peak_hysteresis > 0.0 and (s_vals[t] - s_vals[right] < peak_hysteresis):
+                    continue
+
+                # Swing-size condition: peak must exceed lower neighbor by min amount
+                local_min = min(s_vals[t - 1], s_vals[right])
+                if peak_min_swing > 0.0 and (s_vals[t] - local_min < peak_min_swing):
+                    continue
+
+                peak_max[right] = True
+
+
+            # raw local min at t
+            if (s_vals[t] < s_vals[t - 1]) and (s_vals[t] <= s_vals[right]) and region_min[t]:
+
+                # Hysteresis condition:
+                if peak_hysteresis > 0.0 and (s_vals[right] - s_vals[t] < peak_hysteresis):
+                    continue
+
+                # Swing-size condition: valley must be below upper neighbor by min amount
+                local_max = max(s_vals[t - 1], s_vals[right])
+                if peak_min_swing > 0.0 and (local_max - s_vals[t] < peak_min_swing):
+                    continue
+
+                peak_min[right] = True
+
+
+
+    else:
+        # General windowed logic with optional hysteresis:
+        #   - center index c runs from k .. n-k-1
+        #   - window = [c-k, ..., c, ..., c+k]
+        #   - we can only confirm after seeing s[c+k]
+        #   - so the *signal* is placed at index (c+k)
+        for c in range(k, n - k):
+            left = c - k
+            right = c + k
+            window = s_vals[left:right + 1]
+            val = s_vals[c]
+
+            # Max: center is the maximum of the window and in region_max
+            if region_max[c] and val == window.max():
+
+                # Hysteresis condition:
+                if peak_hysteresis > 0.0 and (val - s_vals[right] < peak_hysteresis):
+                    continue
+
+                # Swing-size condition:
+                local_min = window.min()
+                if peak_min_swing > 0.0 and (val - local_min < peak_min_swing):
+                    continue
+
+                peak_max[right] = True
+
+
+            # Min: center is the minimum of the window and in region_min
+            if region_min[c] and val == window.min():
+
+                # Hysteresis condition:
+                if peak_hysteresis > 0.0 and (s_vals[right] - val < peak_hysteresis):
+                    continue
+
+                # Swing-size condition:
+                local_max = window.max()
+                if peak_min_swing > 0.0 and (local_max - val < peak_min_swing):
+                    continue
+
+                peak_min[right] = True
+
+
 
     df["slope_peak_max"] = peak_max
     df["slope_peak_min"] = peak_min
 
     return df
+
 
 
 def add_causal_slope_peaks(df, slope_col="KF_slope_adapt"):
@@ -135,9 +215,10 @@ def add_entry_signals(
     peak_max_col="slope_peak_max",
     peak_min_col="slope_peak_min",
     Q_high=0.90,
-    K=10,
     cooldown=20,
     last_entry_time="15:55",
+    use_region_recent=True,     # NEW
+    region_recent_window=10,
 ):
     """
     Clean entry logic (no position state here, just signals + cooldown).
@@ -184,8 +265,14 @@ def add_entry_signals(
     peak_min = df[peak_min_col].fillna(False)
 
     # Recency filters: region must be true at least once in last K samples
-    region_min_recent = region_min.rolling(K).max().astype(bool)
-    region_max_recent = region_max.rolling(K).max().astype(bool)
+    if use_region_recent:
+        region_max_recent = region_max.rolling(region_recent_window).max().astype(bool)
+        region_min_recent = region_min.rolling(region_recent_window).max().astype(bool)
+    else:
+        # If recency disabled → treat recency as always satisfied
+        region_max_recent = pd.Series(True, index=df.index)
+        region_min_recent = pd.Series(True, index=df.index)
+
 
     # Probability gating
     prob_gate_max = q >= Q_high

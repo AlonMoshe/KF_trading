@@ -108,9 +108,21 @@ def build_date_to_file_map(file_infos):
 # 3) Run backtest for ONE day given its file
 # ------------------------------------------------------------
 
-def run_day_backtest(symbol, session_date, file_path, interval=5, window_max=100, 
-                     Q_high=0.90,slope_smooth=False, slope_smooth_window=5,
-                      cooldown=20,verbose=True):
+def run_day_backtest(symbol, session_date, file_path,
+                     interval=5,
+                     window_max=100,
+                     Q_high=0.90,
+                     slope_smooth=False,
+                     slope_smooth_window=5,
+                     slope_peak_half_window=1,
+                     slope_peak_hysteresis=0.0,   # NEW
+                     cooldown=20,
+                     slope_peak_min_swing=0.0, 
+                     use_region_recent=True,       # NEW
+                     region_recent_window=10,      # NEW
+                     verbose=True):
+
+
     """
     Run the full causal trading pipeline for a single day
     using the data in `file_path` (which may contain multiple days).
@@ -154,10 +166,13 @@ def run_day_backtest(symbol, session_date, file_path, interval=5, window_max=100
 
     # 3) Causal slope peaks for entries (region-gated)
     df_day = add_slope_peaks(
-    df_day,
-    slope_col="KF_slope_adapt",
-    smooth=slope_smooth,
-    smooth_window=slope_smooth_window,
+        df_day,
+        slope_col="KF_slope_adapt",
+        smooth=slope_smooth,
+        smooth_window=slope_smooth_window,
+        peak_half_window=slope_peak_half_window,
+        peak_hysteresis=slope_peak_hysteresis,
+        peak_min_swing=slope_peak_min_swing,  
     )
 
 
@@ -170,6 +185,8 @@ def run_day_backtest(symbol, session_date, file_path, interval=5, window_max=100
             q_col="slope_q_roll_daily",
             Q_high=Q_high,
             cooldown=cooldown,        # ★ pass through
+            use_region_recent=use_region_recent,            # NEW
+            region_recent_window=region_recent_window       # NEW
         )
 
     df_day = add_exit_signals(df_day)
@@ -228,9 +245,21 @@ def run_day_backtest(symbol, session_date, file_path, interval=5, window_max=100
 # 4) Run backtest for a DATE RANGE
 # ------------------------------------------------------------
 
-def run_backtest_range(symbol, start_date, end_date, interval=5,
-                       window_max=100,Q_high=0.90,slope_smooth=False, slope_smooth_window=5, 
-                       cooldown=20, verbose=True):
+def run_backtest_range(symbol, start_date, end_date,
+                        interval=5,
+                        window_max=100,
+                        Q_high=0.90,
+                        slope_smooth=False,
+                        slope_smooth_window=5,
+                        slope_peak_half_window=1,
+                        slope_peak_hysteresis=0.0,   # NEW
+                        cooldown=20,
+                        slope_peak_min_swing=0.0,
+                        use_region_recent=True,        # NEW
+                        region_recent_window=10,       # NEW
+                        verbose=True):
+
+
     """
     Run the daily trading simulation for each date in [start_date, end_date]
     for the given symbol and interval.
@@ -271,11 +300,18 @@ def run_backtest_range(symbol, start_date, end_date, interval=5,
                 interval=interval,
                 window_max=window_max,
                 Q_high=Q_high,
-                slope_smooth=slope_smooth,                   # ★ pass through
-                slope_smooth_window=slope_smooth_window,     # ★ pass through
-                cooldown=cooldown,                           # ★ pass through
+                slope_smooth=slope_smooth,
+                slope_smooth_window=slope_smooth_window,
+                slope_peak_half_window=slope_peak_half_window,
+                slope_peak_hysteresis=slope_peak_hysteresis,   # NEW
+                cooldown=cooldown,
                 verbose=verbose,
+                slope_peak_min_swing=slope_peak_min_swing,
+                use_region_recent=use_region_recent,
+                region_recent_window=region_recent_window,
             )
+
+
             if summary is not None:
                 results.append(summary)
         d += dt.timedelta(days=1)
@@ -293,10 +329,16 @@ def one_day_backtest(symbol, year, month, day,
                      window_max=100,
                      cooldown=20,
                      interval=5,
-                     slope_smooth=False,                 # NEW
-                     slope_smooth_window=5,     
-                     verbose=True
-                     ):
+                     slope_smooth=False,
+                     slope_smooth_window=5,
+                     slope_peak_half_window=1,
+                     slope_peak_hysteresis=0.0,   # NEW
+                     slope_peak_min_swing=0.0,
+                     use_region_recent=True,        # NEW
+                     region_recent_window=10,       # NEW
+                     verbose=True):
+
+
     """
     Complete one-day simulation:
     - loads correct file for the day
@@ -369,10 +411,19 @@ def one_day_backtest(symbol, year, month, day,
     )
 
     # Causal slope peaks (entry)
-    df_day = add_slope_peaks(df_day,
-            slope_col="KF_slope_adapt",
-            smooth=slope_smooth,
-            smooth_window=slope_smooth_window)
+    df_day = add_slope_peaks(
+        df_day,
+        slope_col="KF_slope_adapt",
+        smooth=slope_smooth,
+        smooth_window=slope_smooth_window,
+        peak_half_window=slope_peak_half_window,
+        peak_hysteresis=slope_peak_hysteresis,
+        peak_min_swing=slope_peak_min_swing,
+
+    )
+
+
+
 
     # Raw causal peaks (exit)
     df_day = add_raw_slope_peaks(df_day)
@@ -383,6 +434,8 @@ def one_day_backtest(symbol, year, month, day,
         q_col="slope_q_roll_daily",
         Q_high=Q_high,
         cooldown=cooldown,
+        use_region_recent=use_region_recent,
+        region_recent_window=region_recent_window
     )
 
     df_day = add_exit_signals(df_day)
