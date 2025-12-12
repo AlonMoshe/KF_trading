@@ -42,8 +42,9 @@ def add_slope_peaks(
     smooth=False,
     smooth_window=5,
     peak_half_window=1,
-     peak_hysteresis=0.0,
-     peak_min_swing=0.0
+    peak_hysteresis=0.0,
+    peak_min_swing=0.0,
+    logger=None
 ):
     """
     STRICTLY CAUSAL slope peaks/troughs for timing entries.
@@ -99,6 +100,17 @@ def add_slope_peaks(
                     continue
 
                 peak_max[right] = True
+                
+                if logger is not None:
+                    ts = df.index[right].strftime("%H:%M:%S")
+                    local_min = min(s_vals[t - 1], s_vals[right])
+                    logger.log(f"[{ts}] FILTERED PEAK MAX DETECTED")
+                    logger.log(f"  slope={s_vals[t]}")
+                    logger.log(f"  region_max={region_max[t]}")
+                    logger.log(f"  hysteresis_pass={(peak_hysteresis==0 or (s_vals[t]-s_vals[right]>=peak_hysteresis))}")
+                    logger.log(f"  swing_pass={(peak_min_swing==0 or (s_vals[t]-local_min>=peak_min_swing))}")
+                    logger.log(f"  → slope_peak_max=True")
+
 
 
             # raw local min at t
@@ -114,6 +126,17 @@ def add_slope_peaks(
                     continue
 
                 peak_min[right] = True
+                
+                if logger is not None:
+                    ts = df.index[right].strftime("%H:%M:%S")
+                    local_max = max(s_vals[t - 1], s_vals[right])   # ✅ correct for k=1
+                    logger.log(f"[{ts}] FILTERED PEAK MIN DETECTED")
+                    logger.log(f"  slope={s_vals[t]}")
+                    logger.log(f"  region_min={region_min[t]}")
+                    logger.log(f"  hysteresis_pass={(peak_hysteresis==0 or (s_vals[right]-s_vals[t]>=peak_hysteresis))}")
+                    logger.log(f"  swing_pass={(peak_min_swing==0 or (local_max-s_vals[t]>=peak_min_swing))}")
+                    logger.log(f"  → slope_peak_min=True")
+
 
 
 
@@ -128,6 +151,10 @@ def add_slope_peaks(
             right = c + k
             window = s_vals[left:right + 1]
             val = s_vals[c]
+            # Precompute local extremes for logging & swing conditions
+            window_min = window.min()
+            window_max = window.max()
+
 
             # Max: center is the maximum of the window and in region_max
             if region_max[c] and val == window.max():
@@ -137,11 +164,24 @@ def add_slope_peaks(
                     continue
 
                 # Swing-size condition:
-                local_min = window.min()
+                local_min = window_min
                 if peak_min_swing > 0.0 and (val - local_min < peak_min_swing):
                     continue
 
                 peak_max[right] = True
+                
+                # LOG WINDOWED MAX PEAK
+                if logger is not None:
+                    ts = df.index[right].strftime("%H:%M:%S")
+                   
+                    logger.log(f"[{ts}] FILTERED PEAK MAX DETECTED (WINDOWED)")
+                    logger.log(f"  slope_center={val}")
+                    logger.log(f"  local_min_window={local_min}")
+                    logger.log(f"  region_max={bool(region_max[c])}")
+                    logger.log(f"  hysteresis_pass={(peak_hysteresis == 0 or (val - s_vals[right] >= peak_hysteresis))}")
+                    logger.log(f"  swing_pass={(peak_min_swing == 0 or (val - local_min >= peak_min_swing))}")
+                    logger.log(f"  → slope_peak_max=True")
+
 
 
             # Min: center is the minimum of the window and in region_min
@@ -152,11 +192,23 @@ def add_slope_peaks(
                     continue
 
                 # Swing-size condition:
-                local_max = window.max()
+                local_max = window_max
                 if peak_min_swing > 0.0 and (local_max - val < peak_min_swing):
                     continue
 
                 peak_min[right] = True
+
+                # LOG WINDOWED MIN PEAK
+                if logger is not None:
+                    ts = df.index[right].strftime("%H:%M:%S")
+
+                    logger.log(f"[{ts}] FILTERED PEAK MIN DETECTED (WINDOWED)")
+                    logger.log(f"  slope_center={val}")
+                    logger.log(f"  local_max_window={local_max}")
+                    logger.log(f"  region_min={bool(region_min[c])}")
+                    logger.log(f"  hysteresis_pass={(peak_hysteresis == 0 or (s_vals[right] - val >= peak_hysteresis))}")
+                    logger.log(f"  swing_pass={(peak_min_swing == 0 or (local_max - val >= peak_min_swing))}")
+                    logger.log(f"  → slope_peak_min=True")
 
 
 
@@ -217,68 +269,62 @@ def add_entry_signals(
     Q_high=0.90,
     cooldown=20,
     last_entry_time="15:55",
-    use_region_recent=True,     # NEW
+    use_region_recent=True,
     region_recent_window=10,
+    logger=None,
 ):
     """
-    Clean entry logic (no position state here, just signals + cooldown).
+    ENTRY SIGNAL GENERATION (causal, no position state).
 
-    LONG entry if (raw setup):
-        region_min
-        region_min_recent
-        slope_peak_min
+    LONG ENTRY (raw conditions):
+        region_min == True
+        region_min_recent == True
+        slope_peak_min == True
         q <= 1 - Q_high
 
-    SHORT entry if (raw setup):
-        region_max
-        region_max_recent
-        slope_peak_max
+    SHORT ENTRY (raw conditions):
+        region_max == True
+        region_max_recent == True
+        slope_peak_max == True
         q >= Q_high
 
-    Then a per-side cooldown is applied to avoid clustering.
+    Then a cooldown is applied per side to prevent trade clustering.
 
-    Causality:
-      - All inputs are based only on information up to the current bar.
-      - The entry signal at index i is intended to be EXECUTED at next-bar open (i+1).
-      - To enforce "no new positions from 15:55:00", we drop any entry whose
-        execution bar (i+1) has time >= last_entry_time (US/Eastern).
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Single-day intraday dataframe (e.g. 09:30–15:59:55, US/Eastern).
-    q_col : str
-        Column with slope quantiles (for trading you will typically use
-        'slope_q_roll_daily').
-    last_entry_time : str or None
-        'HH:MM' cutoff for NEW positions based on execution time (bar i+1).
-        If None, no time cutoff is applied.
+    The signal at bar i is meant to be executed at bar (i+1).
     """
 
     df = df.copy()
+    idx = df.index
+    n = len(df)
 
-    # Extract relevant series
+    # -------------------------
+    # Extract relevant columns
+    # -------------------------
     q = df[q_col].astype(float)
     region_max = df[region_max_col].fillna(False)
     region_min = df[region_min_col].fillna(False)
     peak_max = df[peak_max_col].fillna(False)
     peak_min = df[peak_min_col].fillna(False)
 
-    # Recency filters: region must be true at least once in last K samples
+    # -------------------------
+    # Recency gating
+    # -------------------------
     if use_region_recent:
         region_max_recent = region_max.rolling(region_recent_window).max().astype(bool)
         region_min_recent = region_min.rolling(region_recent_window).max().astype(bool)
     else:
-        # If recency disabled → treat recency as always satisfied
         region_max_recent = pd.Series(True, index=df.index)
         region_min_recent = pd.Series(True, index=df.index)
 
-
+    # -------------------------
     # Probability gating
+    # -------------------------
     prob_gate_max = q >= Q_high
     prob_gate_min = q <= (1 - Q_high)
 
-    # Raw entry signals (before cooldown and time cutoff)
+    # -------------------------
+    # Raw entry conditions
+    # -------------------------
     entry_long_raw = (
         region_min &
         region_min_recent &
@@ -293,51 +339,112 @@ def add_entry_signals(
         prob_gate_max
     )
 
-    # Apply cooldown per side
+    # -------------------------
+    # Apply cooldown control
+    # -------------------------
     entry_long = []
     entry_short = []
 
     long_cool = 0
     short_cool = 0
 
-    for il, is_ in zip(entry_long_raw, entry_short_raw):
+    for i in range(n):
+        il = bool(entry_long_raw.iloc[i])
+        is_ = bool(entry_short_raw.iloc[i])
 
-        # LONG side
+        # ====================================================
+        # LOG SHORT ENTRY EVALUATION (triggered by slope peak)
+        # ====================================================
+        if logger is not None and peak_max.iloc[i]:
+            ts = idx[i].strftime("%H:%M:%S")
+            logger.log(f"[{ts}] ENTRY SHORT EVALUATION")
+            logger.log(f"  slope_peak_max={bool(peak_max.iloc[i])}")
+            logger.log(f"  region_max={bool(region_max.iloc[i])}")
+            logger.log(f"  region_max_recent={bool(region_max_recent.iloc[i])}")
+            logger.log(f"  prob_gate_max={bool(prob_gate_max.iloc[i])}")
+            logger.log(f"  cooldown={short_cool}")
+
+        # ====================================================
+        # LOG LONG ENTRY EVALUATION (triggered by slope peak)
+        # ====================================================
+        if logger is not None and peak_min.iloc[i]:
+            ts = idx[i].strftime("%H:%M:%S")
+            logger.log(f"[{ts}] ENTRY LONG EVALUATION")
+            logger.log(f"  slope_peak_min={bool(peak_min.iloc[i])}")
+            logger.log(f"  region_min={bool(region_min.iloc[i])}")
+            logger.log(f"  region_min_recent={bool(region_min_recent.iloc[i])}")
+            logger.log(f"  prob_gate_min={bool(prob_gate_min.iloc[i])}")
+            logger.log(f"  cooldown={long_cool}")
+
+        # -------------------
+        # LONG side cooldown
+        # -------------------
         if long_cool > 0:
             entry_long.append(False)
             long_cool -= 1
+
         else:
-            if il:
+            if il:     # raw signal present
                 entry_long.append(True)
                 long_cool = cooldown
             else:
                 entry_long.append(False)
 
-        # SHORT side
+        # -------------------
+        # SHORT side cooldown
+        # -------------------
         if short_cool > 0:
             entry_short.append(False)
             short_cool -= 1
+
         else:
-            if is_:
+            if is_:   # raw signal present
                 entry_short.append(True)
                 short_cool = cooldown
             else:
                 entry_short.append(False)
 
+        # ====================================================
+        # SHORT RESULT LOGGING (after cooldown)
+        # ====================================================
+        if logger is not None and peak_max.iloc[i]:
+            if entry_short[-1]:
+                logger.log("  → ENTRY_SHORT=True")
+            else:
+                reasons = []
+                if not region_max.iloc[i]: reasons.append("region_max=False")
+                if not region_max_recent.iloc[i]: reasons.append("region_max_recent=False")
+                if not prob_gate_max.iloc[i]: reasons.append("prob_gate_max=False")
+                if not peak_max.iloc[i]: reasons.append("slope_peak_max=False")
+                if short_cool > 0: reasons.append(f"cooldown={short_cool}")
+                logger.log(f"  → ENTRY_SHORT REJECTED (reason: {', '.join(reasons)})")
+
+        # ====================================================
+        # LONG RESULT LOGGING (after cooldown)
+        # ====================================================
+        if logger is not None and peak_min.iloc[i]:
+            if entry_long[-1]:
+                logger.log("  → ENTRY_LONG=True")
+            else:
+                reasons = []
+                if not region_min.iloc[i]: reasons.append("region_min=False")
+                if not region_min_recent.iloc[i]: reasons.append("region_min_recent=False")
+                if not prob_gate_min.iloc[i]: reasons.append("prob_gate_min=False")
+                if not peak_min.iloc[i]: reasons.append("slope_peak_min=False")
+                if long_cool > 0: reasons.append(f"cooldown={long_cool}")
+                logger.log(f"  → ENTRY_LONG REJECTED (reason: {', '.join(reasons)})")
+
+    # Convert to numpy arrays
     entry_long = np.array(entry_long, dtype=bool)
     entry_short = np.array(entry_short, dtype=bool)
 
-    # -------------------------------------------------
-    # Time cutoff: forbid new entries whose EXECUTION
-    # (next-bar open) would be at or after last_entry_time.
-    # -------------------------------------------------
+    # ----------------------------------------------
+    # TIME CUTOFF (execution occurs at i+1)
+    # ----------------------------------------------
     if last_entry_time is not None:
-        # Parse 'HH:MM'
         hh, mm = map(int, last_entry_time.split(":"))
         cutoff_time = dt.time(hour=hh, minute=mm)
 
-        idx = df.index
-        # Ensure US/Eastern for time-of-day
         if idx.tz is None:
             idx_e = idx.tz_localize("US/Eastern")
         else:
@@ -345,14 +452,12 @@ def add_entry_signals(
 
         times = idx_e.time
 
-        n = len(df)
         for i in range(n - 1):
-            exec_time = times[i + 1]  # execution bar is i+1
+            exec_time = times[i + 1]
             if exec_time >= cutoff_time:
                 entry_long[i] = False
                 entry_short[i] = False
 
-        # Last bar has no execution bar → no entries
         entry_long[-1] = False
         entry_short[-1] = False
 
@@ -367,6 +472,7 @@ def add_exit_signals(
     max_adverse_bars=7,
     slope_peak_max_col="slope_peak_max_raw",
     slope_peak_min_col="slope_peak_min_raw",
+    logger=None,  
 ):
     """
     STRICTLY CAUSAL EXIT LOGIC.
@@ -431,12 +537,27 @@ def add_exit_signals(
 
             condition_peak = peak_max[i]
             condition_adverse = (adverse_long >= max_adverse_bars)
+            
+            if logger is not None:
+                ts = df.index[i].strftime("%H:%M:%S")
+                logger.log(f"[{ts}] EXIT LONG EVALUATION")
+                logger.log(f"  slope_peak_max_raw={bool(peak_max[i])}")
+                logger.log(f"  adverse_bars={adverse_long}")
+                logger.log(f"  adverse_limit={max_adverse_bars}")
+
 
             if condition_peak or condition_adverse:
+                if logger is not None:
+                    logger.log("  → EXIT_LONG=True")
+
                 exit_long[i] = True
                 in_long = False
                 entry_price_long = None
                 adverse_long = 0
+            else:
+                if logger is not None:
+                    logger.log("  → EXIT_LONG NOT TRIGGERED")
+
 
         # -----------------------
         # SHORT ENTRY TRIGGER
@@ -451,17 +572,36 @@ def add_exit_signals(
         # -----------------------
         if in_short:
 
+            if logger is not None:
+                ts = df.index[i].strftime("%H:%M:%S")
+                logger.log(f"[{ts}] EXIT SHORT EVALUATION")
+                logger.log(f"  slope_peak_min_raw={bool(peak_min[i])}")
+                logger.log(f"  adverse_bars={adverse_short}")
+                logger.log(f"  adverse_limit={max_adverse_bars}")
+
+            # adverse move
             if mids[i] > entry_price_short:
                 adverse_short += 1
 
             condition_peak = peak_min[i]
             condition_adverse = (adverse_short >= max_adverse_bars)
 
+            # --- SHORT EXIT DECISION ---
             if condition_peak or condition_adverse:
+                if logger is not None:
+                    logger.log("  → EXIT_SHORT=True")
+
                 exit_short[i] = True
                 in_short = False
                 entry_price_short = None
                 adverse_short = 0
+            else:
+                if logger is not None:
+                    logger.log("  → EXIT_SHORT NOT TRIGGERED")
+
+                
+        
+
 
     # -----------------------
     # FORCE FLAT AT FINAL BAR

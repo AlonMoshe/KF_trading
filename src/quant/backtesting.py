@@ -120,6 +120,7 @@ def run_day_backtest(symbol, session_date, file_path,
                      slope_peak_min_swing=0.0, 
                      use_region_recent=True,       # NEW
                      region_recent_window=10,      # NEW
+                     logger=None,  
                      verbose=True):
 
 
@@ -129,6 +130,29 @@ def run_day_backtest(symbol, session_date, file_path,
 
     Returns a dict with summary stats or None if no data/trades.
     """
+    # If logger is provided, write header
+    if logger is not None:
+        now = dt.datetime.now()
+
+        logger.log(f"Backtest started: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.log(f"Symbol: {symbol}")
+        logger.log(f"Date: {session_date}")
+        logger.log("")
+        logger.log("Parameters:")
+        logger.log(f"  Q_high={Q_high}")
+        logger.log(f"  window_max={window_max}")
+        logger.log(f"  cooldown={cooldown}")
+        logger.log(f"  slope_smooth={slope_smooth}")
+        logger.log(f"  slope_smooth_window={slope_smooth_window}")
+        logger.log(f"  slope_peak_half_window={slope_peak_half_window}")
+        logger.log(f"  slope_peak_hysteresis={slope_peak_hysteresis}")
+        logger.log(f"  slope_peak_min_swing={slope_peak_min_swing}")
+        logger.log(f"  use_region_recent={use_region_recent}")
+        logger.log(f"  region_recent_window={region_recent_window}")
+        logger.log("")
+
+    
+    
     # Normalize date
     if isinstance(session_date, str):
         session_date = dt.date.fromisoformat(session_date)
@@ -172,7 +196,8 @@ def run_day_backtest(symbol, session_date, file_path,
         smooth_window=slope_smooth_window,
         peak_half_window=slope_peak_half_window,
         peak_hysteresis=slope_peak_hysteresis,
-        peak_min_swing=slope_peak_min_swing,  
+        peak_min_swing=slope_peak_min_swing, 
+        logger=logger,   # optional: if you want to log filtered peaks 
     )
 
 
@@ -186,10 +211,11 @@ def run_day_backtest(symbol, session_date, file_path,
             Q_high=Q_high,
             cooldown=cooldown,        # ★ pass through
             use_region_recent=use_region_recent,            # NEW
-            region_recent_window=region_recent_window       # NEW
+            region_recent_window=region_recent_window,      # NEW
+            logger=logger,     
         )
 
-    df_day = add_exit_signals(df_day)
+    df_day = add_exit_signals(df_day,logger=logger,  )
 
     # 6) Trade IDs (for plotting/debug only)
     df_day = add_trade_ids(df_day)
@@ -237,6 +263,12 @@ def run_day_backtest(symbol, session_date, file_path,
         "shortest_trade": shortest_trade,
         "avg_trade_duration": avg_duration,
     }
+    
+    if logger is not None:
+        logger.log("")
+        logger.log("Backtest finished.")
+        logger.save()
+
 
     return summary
 
@@ -335,7 +367,8 @@ def one_day_backtest(symbol, year, month, day,
                      slope_peak_hysteresis=0.0,   # NEW
                      slope_peak_min_swing=0.0,
                      use_region_recent=True,        # NEW
-                     region_recent_window=10,       # NEW
+                     region_recent_window=10,
+                     log=True,  # NEW
                      verbose=True):
 
 
@@ -350,6 +383,46 @@ def one_day_backtest(symbol, year, month, day,
     This is the ONLY function you need to call from the notebook
     (aside from plotting).
     """
+
+    # Build logger for this run (one file per test)
+    logger = None
+    if log:
+        ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        date_str = f"{year:04d}-{month:02d}-{day:02d}"
+        filename = f"BT_{symbol}_{date_str}_{ts}.log"
+        # You can put logs into e.g. "logs" folder if you want:
+        log_path = os.path.join("logs", filename)
+        logger = BacktestLogger(log_path)
+        
+    if logger is not None:
+        logger.log("=" * 50)
+        logger.log("BACKTEST CONFIGURATION")
+        logger.log("=" * 50)
+
+        logger.log(f"symbol = {symbol}")
+        logger.log(f"date = {date_str}")
+        logger.log("")
+
+        logger.log(f"Q_high = {Q_high}")
+        logger.log(f"window_max = {window_max}")
+        logger.log(f"cooldown = {cooldown}")
+        logger.log(f"interval = {interval}")
+        logger.log("")
+
+        logger.log(f"slope_smooth = {slope_smooth}")
+        logger.log(f"slope_smooth_window = {slope_smooth_window}")
+        logger.log(f"slope_peak_half_window = {slope_peak_half_window}")
+        logger.log(f"slope_peak_hysteresis = {slope_peak_hysteresis}")
+        logger.log(f"slope_peak_min_swing = {slope_peak_min_swing}")
+        logger.log("")
+
+        logger.log(f"use_region_recent = {use_region_recent}")
+        logger.log(f"region_recent_window = {region_recent_window}")
+        logger.log("")
+
+        logger.log("=" * 50)
+        logger.log("")
+
 
     # --------------------------------------------------------
     # 1. Resolve date
@@ -419,6 +492,7 @@ def one_day_backtest(symbol, year, month, day,
         peak_half_window=slope_peak_half_window,
         peak_hysteresis=slope_peak_hysteresis,
         peak_min_swing=slope_peak_min_swing,
+        logger=logger,    
 
     )
 
@@ -435,10 +509,11 @@ def one_day_backtest(symbol, year, month, day,
         Q_high=Q_high,
         cooldown=cooldown,
         use_region_recent=use_region_recent,
-        region_recent_window=region_recent_window
+        region_recent_window=region_recent_window,
+        logger=logger,    
     )
 
-    df_day = add_exit_signals(df_day)
+    df_day = add_exit_signals(df_day,logger=logger)
 
     # Assign trade IDs for plotting/debug
     df_day = add_trade_ids(df_day)
@@ -467,5 +542,34 @@ def one_day_backtest(symbol, year, month, day,
             f"{symbol} {target_date}: "
             f"Trades={num_trades}, Total={total_pnl:.4f}, Avg={avg_pnl:.4f}"
         )
+        
+    if logger is not None:
+        logger.log("")
+        logger.log("Backtest finished.")
+        logger.save()
+
 
     return df_day, df_trades, summary
+
+
+class BacktestLogger:
+    """
+    Lightweight backtest logger.
+    Accumulates lines in memory and writes once at the end.
+    """
+
+    def __init__(self, filepath: str):
+        self.filepath = filepath
+        self.lines = []
+
+    def log(self, msg: str):
+        """Append a line (or block) to the log."""
+        self.lines.append(msg)
+
+    def save(self):
+        """Write all lines to disk."""
+        os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
+        with open(self.filepath, "w", encoding="utf-8") as f:
+            f.write("\n".join(self.lines))
+
+
