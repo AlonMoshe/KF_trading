@@ -3,6 +3,7 @@
 import os
 import datetime as dt
 import pandas as pd
+from collections import OrderedDict
 
 # Adjust these imports to match how you normally import modules.
 from src.data.data_utils import PROCESSED_DATA_DIR, parse_filename_info, select_intraday_session
@@ -121,6 +122,7 @@ def run_day_backtest(symbol, session_date, file_path,
                      use_region_recent=True,       # NEW
                      region_recent_window=10,      # NEW
                      logger=None,  
+                     peak_to_trough=0.0,          # ← ADD
                      verbose=True):
 
 
@@ -130,26 +132,7 @@ def run_day_backtest(symbol, session_date, file_path,
 
     Returns a dict with summary stats or None if no data/trades.
     """
-    # If logger is provided, write header
-    if logger is not None:
-        now = dt.datetime.now()
-
-        logger.log(f"Backtest started: {now.strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.log(f"Symbol: {symbol}")
-        logger.log(f"Date: {session_date}")
-        logger.log("")
-        logger.log("Parameters:")
-        logger.log(f"  Q_high={Q_high}")
-        logger.log(f"  window_max={window_max}")
-        logger.log(f"  cooldown={cooldown}")
-        logger.log(f"  slope_smooth={slope_smooth}")
-        logger.log(f"  slope_smooth_window={slope_smooth_window}")
-        logger.log(f"  slope_peak_half_window={slope_peak_half_window}")
-        logger.log(f"  slope_peak_hysteresis={slope_peak_hysteresis}")
-        logger.log(f"  slope_peak_min_swing={slope_peak_min_swing}")
-        logger.log(f"  use_region_recent={use_region_recent}")
-        logger.log(f"  region_recent_window={region_recent_window}")
-        logger.log("")
+    
 
     
     
@@ -198,6 +181,7 @@ def run_day_backtest(symbol, session_date, file_path,
         peak_hysteresis=slope_peak_hysteresis,
         peak_min_swing=slope_peak_min_swing, 
         logger=logger,   # optional: if you want to log filtered peaks 
+        peak_to_trough=peak_to_trough,   # ← ADD
     )
 
 
@@ -264,10 +248,7 @@ def run_day_backtest(symbol, session_date, file_path,
         "avg_trade_duration": avg_duration,
     }
     
-    if logger is not None:
-        logger.log("")
-        logger.log("Backtest finished.")
-        logger.save()
+    
 
 
     return summary
@@ -289,6 +270,7 @@ def run_backtest_range(symbol, start_date, end_date,
                         slope_peak_min_swing=0.0,
                         use_region_recent=True,        # NEW
                         region_recent_window=10,       # NEW
+                        peak_to_trough=0.0,          # ← ADD
                         verbose=True):
 
 
@@ -341,6 +323,8 @@ def run_backtest_range(symbol, start_date, end_date,
                 slope_peak_min_swing=slope_peak_min_swing,
                 use_region_recent=use_region_recent,
                 region_recent_window=region_recent_window,
+                peak_to_trough=peak_to_trough,
+
             )
 
 
@@ -357,19 +341,20 @@ def run_backtest_range(symbol, start_date, end_date,
 
 
 def one_day_backtest(symbol, year, month, day,
-                     Q_high=0.90,
-                     window_max=100,
-                     cooldown=20,
-                     interval=5,
-                     slope_smooth=False,
-                     slope_smooth_window=5,
-                     slope_peak_half_window=1,
-                     slope_peak_hysteresis=0.0,   # NEW
-                     slope_peak_min_swing=0.0,
-                     use_region_recent=True,        # NEW
-                     region_recent_window=10,
-                     log=True,  # NEW
-                     verbose=True):
+                    Q_high=0.90,
+                    window_max=100,
+                    cooldown=20,
+                    interval=5,
+                    slope_smooth=False,
+                    slope_smooth_window=5,
+                    slope_peak_half_window=1,
+                    slope_peak_hysteresis=0.0,   # NEW
+                    slope_peak_min_swing=0.0,
+                    use_region_recent=True,        # NEW
+                    region_recent_window=10,
+                    log=True,  # NEW
+                    peak_to_trough=0.0,          # ← ADD THIS
+                    verbose=True):
 
 
     """
@@ -395,33 +380,34 @@ def one_day_backtest(symbol, year, month, day,
         logger = BacktestLogger(log_path)
         
     if logger is not None:
-        logger.log("=" * 50)
-        logger.log("BACKTEST CONFIGURATION")
-        logger.log("=" * 50)
+        logger.log("CONFIG","=" * 50)
+        logger.log("CONFIG","BACKTEST CONFIGURATION")
+        logger.log("CONFIG","=" * 50)
 
-        logger.log(f"symbol = {symbol}")
-        logger.log(f"date = {date_str}")
-        logger.log("")
+        logger.log("CONFIG",f"symbol = {symbol}")
+        logger.log("CONFIG",f"date = {date_str}")
+        logger.log("CONFIG","")
 
-        logger.log(f"Q_high = {Q_high}")
-        logger.log(f"window_max = {window_max}")
-        logger.log(f"cooldown = {cooldown}")
-        logger.log(f"interval = {interval}")
-        logger.log("")
+        logger.log("CONFIG",f"Q_high = {Q_high}")
+        logger.log("CONFIG",f"window_max = {window_max}")
+        logger.log("CONFIG",f"cooldown = {cooldown}")
+        logger.log("CONFIG",f"interval = {interval}")
+        logger.log("CONFIG","")
 
-        logger.log(f"slope_smooth = {slope_smooth}")
-        logger.log(f"slope_smooth_window = {slope_smooth_window}")
-        logger.log(f"slope_peak_half_window = {slope_peak_half_window}")
-        logger.log(f"slope_peak_hysteresis = {slope_peak_hysteresis}")
-        logger.log(f"slope_peak_min_swing = {slope_peak_min_swing}")
-        logger.log("")
+        logger.log("CONFIG",f"slope_smooth = {slope_smooth}")
+        logger.log("CONFIG",f"slope_smooth_window = {slope_smooth_window}")
+        logger.log("CONFIG",f"slope_peak_half_window = {slope_peak_half_window}")
+        logger.log("CONFIG",f"slope_peak_hysteresis = {slope_peak_hysteresis}")
+        logger.log("CONFIG",f"slope_peak_min_swing = {slope_peak_min_swing}")
+        logger.log("CONFIG","")
 
-        logger.log(f"use_region_recent = {use_region_recent}")
-        logger.log(f"region_recent_window = {region_recent_window}")
-        logger.log("")
+        logger.log("CONFIG",f"use_region_recent = {use_region_recent}")
+        logger.log("CONFIG",f"region_recent_window = {region_recent_window}")
+        logger.log("CONFIG", f"peak_to_trough = {peak_to_trough}")
+        logger.log("CONFIG","")
 
-        logger.log("=" * 50)
-        logger.log("")
+        logger.log("CONFIG","=" * 50)
+        logger.log("CONFIG","")
 
 
     # --------------------------------------------------------
@@ -492,6 +478,7 @@ def one_day_backtest(symbol, year, month, day,
         peak_half_window=slope_peak_half_window,
         peak_hysteresis=slope_peak_hysteresis,
         peak_min_swing=slope_peak_min_swing,
+        peak_to_trough=peak_to_trough,   # NEW
         logger=logger,    
 
     )
@@ -500,7 +487,8 @@ def one_day_backtest(symbol, year, month, day,
 
 
     # Raw causal peaks (exit)
-    df_day = add_raw_slope_peaks(df_day)
+    df_day = add_raw_slope_peaks(df_day, logger=logger)
+
 
     # Entry / exit signals
     df_day = add_entry_signals(
@@ -544,32 +532,48 @@ def one_day_backtest(symbol, year, month, day,
         )
         
     if logger is not None:
-        logger.log("")
-        logger.log("Backtest finished.")
+        
+        logger.log("END","Backtest finished.")
         logger.save()
 
 
     return df_day, df_trades, summary
 
 
+
+
 class BacktestLogger:
     """
-    Lightweight backtest logger.
-    Accumulates lines in memory and writes once at the end.
+    Time-bucketed backtest logger.
+    Groups all log messages by timestamp.
     """
 
     def __init__(self, filepath: str):
         self.filepath = filepath
-        self.lines = []
+        self.blocks = OrderedDict()  # ts -> list[str]
 
-    def log(self, msg: str):
-        """Append a line (or block) to the log."""
-        self.lines.append(msg)
+    def log(self, ts: str, msg: str):
+        """
+        Log a message under a given timestamp.
+        """
+        if ts not in self.blocks:
+            self.blocks[ts] = []
+        self.blocks[ts].append(msg)
 
     def save(self):
-        """Write all lines to disk."""
+        """
+        Write grouped logs to disk.
+        """
         os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
+
+        lines = []
+        for ts, msgs in self.blocks.items():
+            lines.append(f"[{ts}]")
+            for m in msgs:
+                lines.append(f"  {m}")
+            lines.append("")  # blank line between blocks
+
         with open(self.filepath, "w", encoding="utf-8") as f:
-            f.write("\n".join(self.lines))
+            f.write("\n".join(lines))
 
 
