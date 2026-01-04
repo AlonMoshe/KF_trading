@@ -1,0 +1,30 @@
+strategy:
+  Q_high: 0.8
+  window_max: 50
+  interval: 5
+
+  slope:
+    smooth: true
+    smooth_window: 5
+    peak_half_window: 2
+    peak_hysteresis: 0
+    peak_min_swing: 0
+    peak_to_trough: 0.025
+
+  entry:
+    cooldown: 10
+    use_region_recent: false
+    region_recent_window: 10
+    n_confirm_bars: 1   # ← YOU CONTROL THIS
+  
+  exit:
+    n_exit_confirm_bars: 5
+    max_adverse_bars: 7
+    trailing_col: KF_level_adapt
+
+  market:
+    proportion_low: 0.34
+    proportion_high: 0.8
+
+
+

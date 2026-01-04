@@ -4,6 +4,10 @@ import os
 import datetime as dt
 import pandas as pd
 from collections import OrderedDict
+from aiohttp_client_cache import logger
+from src.config.strategy_config import StrategyConfig
+
+
 
 # Adjust these imports to match how you normally import modules.
 from src.data.data_utils import PROCESSED_DATA_DIR, parse_filename_info, select_intraday_session
@@ -17,6 +21,7 @@ from src.signals.signal_utils import (
     add_trade_ids,
     extract_trades,
     trades_to_dataframe,
+    add_market_state,
 )
 
 
@@ -105,257 +110,15 @@ def build_date_to_file_map(file_infos):
     return date_to_file
 
 
-# ------------------------------------------------------------
-# 3) Run backtest for ONE day given its file
-# ------------------------------------------------------------
-
-def run_day_backtest(symbol, session_date, file_path,
-                     interval=5,
-                     window_max=100,
-                     Q_high=0.90,
-                     slope_smooth=False,
-                     slope_smooth_window=5,
-                     slope_peak_half_window=1,
-                     slope_peak_hysteresis=0.0,   # NEW
-                     cooldown=20,
-                     slope_peak_min_swing=0.0, 
-                     use_region_recent=True,       # NEW
-                     region_recent_window=10,      # NEW
-                     logger=None,  
-                     peak_to_trough=0.0,          # ← ADD
-                     verbose=True):
 
 
-    """
-    Run the full causal trading pipeline for a single day
-    using the data in `file_path` (which may contain multiple days).
-
-    Returns a dict with summary stats or None if no data/trades.
-    """
-    
-
-    
-    
-    # Normalize date
-    if isinstance(session_date, str):
-        session_date = dt.date.fromisoformat(session_date)
-
-    # Load the file directly (we already know which file to use)
-    df = pd.read_csv(file_path, index_col=0)
-    df.index = pd.to_datetime(df.index)
-
-    if df.index.tz is None:
-        df.index = df.index.tz_localize("US/Eastern")
-    else:
-        df.index = df.index.tz_convert("US/Eastern")
-
-    df = df.sort_index()
-
-    # Slice intraday session for this date
-    date_str = session_date.isoformat()
-    df_day = select_intraday_session(df, date_str, start_time="09:30", end_time="15:59:55")
-
-    if df_day.empty:
-        if verbose:
-            print(f"[WARN] {symbol} {date_str}: no intraday data in file, skipping.")
-        return None
-
-    # --------------------------------------------------------
-    # Run your full causal trading pipeline on df_day
-    # --------------------------------------------------------
-
-    # 1) Daily ECDF quantiles (causal)
-    df_day = add_slope_quantiles_daily(df_day, slope_col="KF_slope_adapt",
-                                       min_points=50, window_max=window_max)
-
-    # 2) Turning regions (use daily quantile column)
-    df_day = add_turning_regions(df_day, q_col="slope_q_roll_daily", Q_high=Q_high)
-
-    # 3) Causal slope peaks for entries (region-gated)
-    df_day = add_slope_peaks(
-        df_day,
-        slope_col="KF_slope_adapt",
-        smooth=slope_smooth,
-        smooth_window=slope_smooth_window,
-        peak_half_window=slope_peak_half_window,
-        peak_hysteresis=slope_peak_hysteresis,
-        peak_min_swing=slope_peak_min_swing, 
-        logger=logger,   # optional: if you want to log filtered peaks 
-        peak_to_trough=peak_to_trough,   # ← ADD
-    )
-
-
-    # 4) Raw causal peaks for exits
-    df_day = add_raw_slope_peaks(df_day, slope_col="KF_slope_adapt")
-
-    # 5) Entry and exit signals
-    df_day = add_entry_signals(
-            df_day,
-            q_col="slope_q_roll_daily",
-            Q_high=Q_high,
-            cooldown=cooldown,        # ★ pass through
-            use_region_recent=use_region_recent,            # NEW
-            region_recent_window=region_recent_window,      # NEW
-            logger=logger,     
-        )
-
-    df_day = add_exit_signals(df_day,logger=logger,  )
-
-    # 6) Trade IDs (for plotting/debug only)
-    df_day = add_trade_ids(df_day)
-
-    # 7) Extract trades and build trades DataFrame
-    trades = extract_trades(df_day)
-    df_trades = trades_to_dataframe(trades)
-
-    # --------------------------------------------------------
-    # Summarize daily performance
-    # --------------------------------------------------------
-    if df_trades.empty:
-        total_pnl = 0.0
-        num_trades = 0
-        avg_pnl = 0.0
-        long_pnl = 0.0
-        short_pnl = 0.0
-        longest_trade = 0
-        shortest_trade = 0
-        avg_duration = 0.0
-    else:
-        total_pnl = float(df_trades["pnl"].sum())
-        num_trades = int(len(df_trades))
-        avg_pnl = float(df_trades["pnl"].mean())
-
-        long_pnl = float(df_trades.loc[df_trades["side"] == "long", "pnl"].sum())
-        short_pnl = float(df_trades.loc[df_trades["side"] == "short", "pnl"].sum())
-
-        longest_trade = int(df_trades["holding_bars"].max())
-        shortest_trade = int(df_trades["holding_bars"].min())
-        avg_duration = float(df_trades["holding_bars"].mean())
-
-    if verbose:
-        print(f"{symbol} {date_str}: trades={num_trades}, PnL={total_pnl:.4f}")
-
-    summary = {
-        "date": session_date,
-        "symbol": symbol.upper(),
-        "num_trades": num_trades,
-        "total_pnl": total_pnl,
-        "avg_pnl": avg_pnl,
-        "long_pnl": long_pnl,
-        "short_pnl": short_pnl,
-        "longest_trade": longest_trade,
-        "shortest_trade": shortest_trade,
-        "avg_trade_duration": avg_duration,
-    }
-    
-    
-
-
-    return summary
-
-
-# ------------------------------------------------------------
-# 4) Run backtest for a DATE RANGE
-# ------------------------------------------------------------
-
-def run_backtest_range(symbol, start_date, end_date,
-                        interval=5,
-                        window_max=100,
-                        Q_high=0.90,
-                        slope_smooth=False,
-                        slope_smooth_window=5,
-                        slope_peak_half_window=1,
-                        slope_peak_hysteresis=0.0,   # NEW
-                        cooldown=20,
-                        slope_peak_min_swing=0.0,
-                        use_region_recent=True,        # NEW
-                        region_recent_window=10,       # NEW
-                        peak_to_trough=0.0,          # ← ADD
-                        verbose=True):
-
-
-    """
-    Run the daily trading simulation for each date in [start_date, end_date]
-    for the given symbol and interval.
-
-    Returns:
-        results_df : DataFrame with one row per trading day.
-    """
-    symbol = symbol.upper()
-
-    # Normalize dates
-    if isinstance(start_date, str):
-        start_date = dt.date.fromisoformat(start_date)
-    if isinstance(end_date, str):
-        end_date = dt.date.fromisoformat(end_date)
-
-    # 1) Discover files
-    file_infos = discover_processed_files(symbol, interval=interval)
-    if not file_infos:
-        print(f"[ERROR] No processed files found for {symbol} at interval {interval}.")
-        return pd.DataFrame()
-
-    # 2) Build date -> file map
-    date_to_file = build_date_to_file_map(file_infos)
-
-    # 3) Loop over each date in the requested range
-    results = []
-    d = start_date
-    while d <= end_date:
-        if d not in date_to_file:
-            if verbose:
-                print(f"{symbol} {d.isoformat()}: no processed file, skipping.")
-        else:
-            file_path = date_to_file[d]
-            summary = run_day_backtest(
-                symbol=symbol,
-                session_date=d,
-                file_path=file_path,
-                interval=interval,
-                window_max=window_max,
-                Q_high=Q_high,
-                slope_smooth=slope_smooth,
-                slope_smooth_window=slope_smooth_window,
-                slope_peak_half_window=slope_peak_half_window,
-                slope_peak_hysteresis=slope_peak_hysteresis,   # NEW
-                cooldown=cooldown,
-                verbose=verbose,
-                slope_peak_min_swing=slope_peak_min_swing,
-                use_region_recent=use_region_recent,
-                region_recent_window=region_recent_window,
-                peak_to_trough=peak_to_trough,
-
-            )
-
-
-            if summary is not None:
-                results.append(summary)
-        d += dt.timedelta(days=1)
-
-    if not results:
-        return pd.DataFrame()
-
-    results_df = pd.DataFrame(results)
-    results_df = results_df.sort_values("date").reset_index(drop=True)
-    return results_df
-
-
-def one_day_backtest(symbol, year, month, day,
-                    Q_high=0.90,
-                    window_max=100,
-                    cooldown=20,
-                    interval=5,
-                    slope_smooth=False,
-                    slope_smooth_window=5,
-                    slope_peak_half_window=1,
-                    slope_peak_hysteresis=0.0,   # NEW
-                    slope_peak_min_swing=0.0,
-                    use_region_recent=True,        # NEW
-                    region_recent_window=10,
-                    log=True,  # NEW
-                    peak_to_trough=0.0,          # ← ADD THIS
-                    verbose=True):
-
+def one_day_backtest(
+    symbol, year, month, day,
+    *,
+    cfg: StrategyConfig,
+    log: bool = True,
+    verbose: bool = True,
+):
 
     """
     Complete one-day simulation:
@@ -368,58 +131,68 @@ def one_day_backtest(symbol, year, month, day,
     This is the ONLY function you need to call from the notebook
     (aside from plotting).
     """
-
-    # Build logger for this run (one file per test)
-    logger = None
-    if log:
-        ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        date_str = f"{year:04d}-{month:02d}-{day:02d}"
-        filename = f"BT_{symbol}_{date_str}_{ts}.log"
-        # You can put logs into e.g. "logs" folder if you want:
-        log_path = os.path.join("logs", filename)
-        logger = BacktestLogger(log_path)
-        
-    if logger is not None:
-        logger.log("CONFIG","=" * 50)
-        logger.log("CONFIG","BACKTEST CONFIGURATION")
-        logger.log("CONFIG","=" * 50)
-
-        logger.log("CONFIG",f"symbol = {symbol}")
-        logger.log("CONFIG",f"date = {date_str}")
-        logger.log("CONFIG","")
-
-        logger.log("CONFIG",f"Q_high = {Q_high}")
-        logger.log("CONFIG",f"window_max = {window_max}")
-        logger.log("CONFIG",f"cooldown = {cooldown}")
-        logger.log("CONFIG",f"interval = {interval}")
-        logger.log("CONFIG","")
-
-        logger.log("CONFIG",f"slope_smooth = {slope_smooth}")
-        logger.log("CONFIG",f"slope_smooth_window = {slope_smooth_window}")
-        logger.log("CONFIG",f"slope_peak_half_window = {slope_peak_half_window}")
-        logger.log("CONFIG",f"slope_peak_hysteresis = {slope_peak_hysteresis}")
-        logger.log("CONFIG",f"slope_peak_min_swing = {slope_peak_min_swing}")
-        logger.log("CONFIG","")
-
-        logger.log("CONFIG",f"use_region_recent = {use_region_recent}")
-        logger.log("CONFIG",f"region_recent_window = {region_recent_window}")
-        logger.log("CONFIG", f"peak_to_trough = {peak_to_trough}")
-        logger.log("CONFIG","")
-
-        logger.log("CONFIG","=" * 50)
-        logger.log("CONFIG","")
-
+    
+    if cfg is None:
+        raise ValueError("one_day_backtest requires a StrategyConfig (cfg)")
 
     # --------------------------------------------------------
     # 1. Resolve date
     # --------------------------------------------------------
     target_date = dt.date(year, month, day)
-    date_str = target_date.isoformat()
+    date_str = target_date.isoformat()          # for data/session logic
+    date_str_for_log = date_str                 # same value, explicit name
+
+
+    # Build logger for this run (one file per test)
+    logger = None
+    if log:
+        ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"BT_{symbol}_{date_str_for_log}_{ts}.log"
+        # You can put logs into e.g. "logs" folder if you want:
+        log_path = os.path.join("logs", filename)
+        logger = BacktestLogger(log_path)
+        
+    if logger is not None:
+        logger.log("00:00:00","[CONFIG] "+"=" * 50)
+        logger.log("00:00:00","[CONFIG] "+"BACKTEST CONFIGURATION")
+        logger.log("00:00:00","[CONFIG] "+"=" * 50)
+
+        logger.log("00:00:00","[CONFIG] "+f"symbol = {symbol}")
+        logger.log("00:00:00","[CONFIG] "+f"date = {date_str_for_log}")
+        logger.log("00:00:00","[CONFIG] "+"")
+
+        logger.log("00:00:00","[CONFIG] "+f"Q_high = {cfg.Q_high}")
+        logger.log("00:00:00","[CONFIG] "+f"window_max = {cfg.window_max}")
+        logger.log("00:00:00","[CONFIG] "+f"cooldown = {cfg.entry.cooldown}")
+        logger.log("00:00:00","[CONFIG] "+f"interval = {cfg.interval}")
+        logger.log("00:00:00","[CONFIG] "+"")
+
+        logger.log("00:00:00","[CONFIG] "+f"slope_smooth = {cfg.slope.smooth}")
+        logger.log("00:00:00","[CONFIG] "+f"slope_smooth_window = {cfg.slope.smooth_window}")
+        logger.log("00:00:00","[CONFIG] "+f"slope_peak_half_window = {cfg.slope.peak_half_window}")
+        logger.log("00:00:00","[CONFIG] "+f"slope_peak_hysteresis = {cfg.slope.peak_hysteresis}")
+        logger.log("00:00:00","[CONFIG] "+f"slope_peak_min_swing = {cfg.slope.peak_min_swing}")
+        logger.log("00:00:00","[CONFIG] "+"")
+
+        logger.log("00:00:00","[CONFIG] "+f"use_region_recent = {cfg.entry.use_region_recent}")
+        logger.log("00:00:00","[CONFIG] "+f"region_recent_window = {cfg.entry.region_recent_window}")
+        logger.log("00:00:00","[CONFIG] "+f"peak_to_trough = {cfg.slope.peak_to_trough}")
+        logger.log("00:00:00","[CONFIG] "+"")
+
+        logger.log("00:00:00","[CONFIG] "+"=" * 50)
+        logger.log("00:00:00","[CONFIG] "+"")
+
+
 
     # --------------------------------------------------------
     # 2. Identify the correct file for the day
     # --------------------------------------------------------
-    infos = discover_processed_files(symbol, interval=interval)
+    
+    infos = discover_processed_files(
+    symbol,
+    interval=cfg.interval,  # interval is strategy-level config
+)
+
     if not infos:
         raise RuntimeError(f"No processed files found for {symbol}")
 
@@ -450,7 +223,21 @@ def one_day_backtest(symbol, year, month, day,
 
     if df_day.empty:
         raise RuntimeError(f"{symbol} {date_str}: No intraday data found.")
+    
+    # --------------------------------------------------------
+    # 4.5. ADD MARKET STATE
+    # --------------------------------------------------------
 
+    df_day = add_market_state(
+        df_day,
+        price_col="Mid",
+        proportion_low=cfg.market.proportion_low,
+        proportion_high=cfg.market.proportion_high,
+    )    
+    
+    
+    
+    
     # --------------------------------------------------------
     # 5. FULL CAUSAL PIPELINE
     # --------------------------------------------------------
@@ -459,26 +246,26 @@ def one_day_backtest(symbol, year, month, day,
     df_day = add_slope_quantiles_daily(
         df_day,
         slope_col="KF_slope_adapt",
-        window_max=window_max,
+        window_max=cfg.window_max,
     )
 
     # Turning regions
     df_day = add_turning_regions(
         df_day,
         q_col="slope_q_roll_daily",
-        Q_high=Q_high,
+        Q_high=cfg.Q_high,
     )
 
     # Causal slope peaks (entry)
     df_day = add_slope_peaks(
         df_day,
         slope_col="KF_slope_adapt",
-        smooth=slope_smooth,
-        smooth_window=slope_smooth_window,
-        peak_half_window=slope_peak_half_window,
-        peak_hysteresis=slope_peak_hysteresis,
-        peak_min_swing=slope_peak_min_swing,
-        peak_to_trough=peak_to_trough,   # NEW
+        smooth=cfg.slope.smooth,
+        smooth_window=cfg.slope.smooth_window,
+        peak_half_window=cfg.slope.peak_half_window,
+        peak_hysteresis=cfg.slope.peak_hysteresis,
+        peak_min_swing=cfg.slope.peak_min_swing,
+        peak_to_trough=cfg.slope.peak_to_trough,   # NEW
         logger=logger,    
 
     )
@@ -493,18 +280,28 @@ def one_day_backtest(symbol, year, month, day,
     # Entry / exit signals
     df_day = add_entry_signals(
         df_day,
+        entry_cfg=cfg.entry,    # ← NEW
         q_col="slope_q_roll_daily",
-        Q_high=Q_high,
-        cooldown=cooldown,
-        use_region_recent=use_region_recent,
-        region_recent_window=region_recent_window,
+        Q_high=cfg.Q_high,
+        cooldown=cfg.entry.cooldown,
+        use_region_recent=cfg.entry.use_region_recent,
+        region_recent_window=cfg.entry.region_recent_window,
         logger=logger,    
     )
 
-    df_day = add_exit_signals(df_day,logger=logger)
+    df_day = add_exit_signals(
+            df_day,
+            exit_cfg=cfg.exit,
+            max_adverse_bars=cfg.exit.max_adverse_bars,
+            logger=logger,
+            )
+
 
     # Assign trade IDs for plotting/debug
     df_day = add_trade_ids(df_day)
+    
+
+
 
     # --------------------------------------------------------
     # 6. Extract trades + summary
@@ -533,7 +330,7 @@ def one_day_backtest(symbol, year, month, day,
         
     if logger is not None:
         
-        logger.log("END","Backtest finished.")
+        logger.log("23:59:59","[END] Backtest finished.")
         logger.save()
 
 
@@ -562,18 +359,25 @@ class BacktestLogger:
 
     def save(self):
         """
-        Write grouped logs to disk.
+        Write logs to disk in strict chronological order.
         """
         os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
 
-        lines = []
+        # Flatten (ts, msg) pairs
+        events = []
         for ts, msgs in self.blocks.items():
-            lines.append(f"[{ts}]")
             for m in msgs:
-                lines.append(f"  {m}")
-            lines.append("")  # blank line between blocks
+                events.append((ts, m))
+
+        # Sort chronologically by timestamp
+        events.sort(key=lambda x: x[0])
+
+        lines = []
+        for ts, msg in events:
+            lines.append(f"[{ts}] {msg}")
 
         with open(self.filepath, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
+
 
 
